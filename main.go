@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	BuildVersion = "0.0.1"
+	BuildVersion = "0.0.1-reset"
 )
 
 type Initializer func(container *Container)
@@ -105,13 +105,14 @@ func main() {
 	container.Register("mqtt", mqtt)
 
 	cec, err := InitialiseCec(devices, "")
-	cec.LibCecLoggingEnabled = logCecMessages
 
 	if nil != err {
 		log.WithFields(log.Fields{
 			"error": err,
 		}).Fatal("Failed to setup CEC connection")
 	}
+
+	cec.LibCecLoggingEnabled = logCecMessages
 
 	container.Register("cec", cec)
 

@@ -1,4 +1,4 @@
-FROM golang:alpine AS dev
+FROM golang:1.23-alpine3.20 AS dev
 
 WORKDIR /root
 
@@ -19,6 +19,7 @@ RUN rm -rf libcec \
        -DBUILD_SHARED_LIBS=1 \
        -DCMAKE_INSTALL_PREFIX=/usr \
        -DHAVE_LINUX_API=1 \
+       -DCMAKE_CXX_FLAGS="-fpermissive" \
        .. \
   \
   && make -j4 \
@@ -33,10 +34,10 @@ COPY . ./
 
 RUN apk add git
 
-RUN go get -d -v .
+RUN go mod download
 RUN go build -v -o cec2mqtt
 
-FROM alpine
+FROM alpine:3.20
 
 RUN apk add p8-platform eudev
 

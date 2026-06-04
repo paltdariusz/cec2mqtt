@@ -57,7 +57,7 @@ func ParseConfig(configPath string) (*Config, error) {
 			log.Debug("Home assistant integration is enabled but discovery prefix is not set. Setting default.")
 			config.HomeAssistant.DiscoveryPrefix = "homeassistant"
 		} else {
-			strings.Trim(config.HomeAssistant.DiscoveryPrefix, "/")
+			config.HomeAssistant.DiscoveryPrefix = strings.Trim(config.HomeAssistant.DiscoveryPrefix, "/")
 		}
 
 		if config.HomeAssistant.BirthTopic == "" {
@@ -67,7 +67,7 @@ func ParseConfig(configPath string) (*Config, error) {
 
 		if config.HomeAssistant.BirthPayload == "" {
 			log.Debug("Home Assistant integration is enabled but birth payload is not set. Setting default.")
-			config.HomeAssistant.BirthTopic = "online"
+			config.HomeAssistant.BirthPayload = "online"
 		}
 	}
 

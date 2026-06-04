@@ -63,22 +63,20 @@ func InitPowerBridge(container *Container) {
 			"device.id": device.Id,
 		}).Debug("Subscribing to power change requests")
 
-		mqtt.Subscribe(mqtt.BuildTopic(device, "power/set"), 0, func(payload []byte) {
-			log.WithFields(log.Fields{
-				"device.id": device.Id,
-				"payload":   payload,
-			})
+		mqtt.Subscribe(mqtt.BuildTopic(device, "power/set"), 1, func(payload []byte) {
 			switch string(payload) {
 			case "on":
 				log.WithFields(log.Fields{
 					"device.id": device.Id,
 				}).Info("Powering device on as requested on MQTT")
 				cec.connection.PowerOnDevice(device.LogicalAddress)
+				bridge.MonitorPower(device.Id)
 			case "off":
 				log.WithFields(log.Fields{
 					"device.id": device.Id,
 				}).Info("Turning device into standby as requested on MQTT")
 				cec.connection.StandByDevice(device.LogicalAddress)
+				bridge.MonitorPower(device.Id)
 			}
 		})
 	})
@@ -98,6 +96,9 @@ func InitPowerBridge(container *Container) {
 
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		device := getDevice(message.Source())
+		if device == nil {
+			return
+		}
 		status := gocec.PowerStatus(message[2])
 
 		log.WithFields(log.Fields{
@@ -110,6 +111,9 @@ func InitPowerBridge(container *Container) {
 
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		device := getDevice(message.Source())
+		if device == nil {
+			return
+		}
 
 		log.WithFields(log.Fields{
 			"device.id": device.Id,
@@ -126,7 +130,14 @@ func InitPowerBridge(container *Container) {
 			"message.raw":         []byte(message),
 		}).Debug("Restarting power monitor on all devices")
 
-		for deviceId, _ := range bridge.states {
+		bridge.statesMutex.Lock()
+		deviceIds := make([]string, 0, len(bridge.states))
+		for deviceId := range bridge.states {
+			deviceIds = append(deviceIds, deviceId)
+		}
+		bridge.statesMutex.Unlock()
+
+		for _, deviceId := range deviceIds {
 			bridge.MonitorPower(deviceId)
 		}
 	}, gocec.OpcodeStandby, gocec.OpcodeActiveSource)
@@ -171,7 +182,7 @@ func (bridge *PowerBridge) setPowerStatus(device *Device, status gocec.PowerStat
 	state.state = value
 
 	if value != "unknown" || !state.published {
-		go bridge.mqtt.Publish(bridge.mqtt.BuildTopic(device, "power"), 0, false, value)
+		bridge.mqtt.Publish(bridge.mqtt.BuildTopic(device, "power"), 0, true, value)
 		state.published = true
 	} else {
 		state.published = false
@@ -235,6 +246,6 @@ func (bridge *PowerBridge) resendAll() {
 			bridge.haBridge.RegisterSwitch(device, "power")
 		}
 
-		bridge.mqtt.Publish(bridge.mqtt.BuildTopic(device, "power"), 0, false, state.state)
+		bridge.mqtt.Publish(bridge.mqtt.BuildTopic(device, "power"), 0, true, state.state)
 	}
 }

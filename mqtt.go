@@ -5,14 +5,23 @@ import (
 	"github.com/eclipse/paho.mqtt.golang"
 	log "github.com/sirupsen/logrus"
 	"strings"
+	"sync"
 )
 
 type MqttConnectedHandler func()
 
+type Subscription struct {
+	topic    string
+	qos      byte
+	callback MessageHandler
+}
+
 type Mqtt struct {
-	client mqtt.Client
-	config *MqttConfig
+	client            mqtt.Client
+	config            *MqttConfig
 	connectedHandlers []MqttConnectedHandler
+	subscriptions     []Subscription
+	subsMutex         sync.Mutex
 }
 
 type MessageHandler func(payload []byte)
@@ -22,6 +31,7 @@ func ConnectMqtt(config *Config) (*Mqtt, error) {
 	options := mqtt.NewClientOptions()
 
 	options.AddBroker(mqttConfig.Host)
+	options.SetClientID("cec2mqtt-" + mqttConfig.BaseTopic)
 
 	if mqttConfig.Username != "" {
 		options.SetUsername(mqttConfig.Username)
@@ -37,8 +47,9 @@ func ConnectMqtt(config *Config) (*Mqtt, error) {
 		}
 	}
 
-	var client mqtt.Client
-	var inst *Mqtt
+	inst := &Mqtt{
+		config: &mqttConfig,
+	}
 
 	options.SetOnConnectHandler(func(client mqtt.Client) {
 		log.Info("Connected to MQTT")
@@ -46,20 +57,26 @@ func ConnectMqtt(config *Config) (*Mqtt, error) {
 			client.Publish(mqttConfig.StateTopic, 0, true, mqttConfig.BirthMessage)
 		}
 
+		inst.subsMutex.Lock()
+		for _, sub := range inst.subscriptions {
+			inst.subscribe(sub.topic, sub.qos, sub.callback)
+		}
+		inst.subsMutex.Unlock()
+
 		for _, handler := range inst.connectedHandlers {
 			handler()
 		}
 	})
 
-	client = mqtt.NewClient(options)
+	client := mqtt.NewClient(options)
+	inst.client = client
 
 	connToken := client.Connect()
 
 	connToken.Wait()
 
-	inst = &Mqtt{
-		client: client,
-		config: &mqttConfig,
+	if err := connToken.Error(); err != nil {
+		return nil, err
 	}
 
 	return inst, nil
@@ -82,6 +99,14 @@ func (mqtt *Mqtt) Publish(topic string, qos byte, retained bool, payload interfa
 }
 
 func (m *Mqtt) Subscribe(topic string, qos byte, callback MessageHandler) {
+	m.subsMutex.Lock()
+	m.subscriptions = append(m.subscriptions, Subscription{topic, qos, callback})
+	m.subsMutex.Unlock()
+
+	m.subscribe(topic, qos, callback)
+}
+
+func (m *Mqtt) subscribe(topic string, qos byte, callback MessageHandler) {
 	m.client.Subscribe(topic, qos, func(_ mqtt.Client, message mqtt.Message) {
 		log.WithFields(log.Fields{
 			"topic":   message.Topic(),

@@ -142,7 +142,7 @@ func (bridge *ActiveSourceBridge) updateActiveSource(newSource *Device) {
 			"device.id": bridge.activeSource.Id,
 		}).Debug("Setting device as inactive source")
 
-		mqtt.Publish(mqtt.BuildTopic(bridge.activeSource, "is_active_source"), 0, false, "off")
+		mqtt.Publish(mqtt.BuildTopic(bridge.activeSource, "is_active_source"), 0, true, "off")
 	}
 
 	if newSource != nil {
@@ -150,7 +150,7 @@ func (bridge *ActiveSourceBridge) updateActiveSource(newSource *Device) {
 			"device.id": newSource.Id,
 		}).Debug("Setting device as active source")
 
-		mqtt.Publish(mqtt.BuildTopic(newSource, "is_active_source"), 0, false, "on")
+		mqtt.Publish(mqtt.BuildTopic(newSource, "is_active_source"), 0, true, "on")
 	}
 
 	bridge.activeSource = newSource
@@ -183,11 +183,11 @@ func (bridge *ActiveSourceBridge) resendAll() {
 		}
 
 		value := "off"
-		if device.Id == bridge.activeSource.Id {
+		if bridge.activeSource != nil && device.Id == bridge.activeSource.Id {
 				value = "on"
 		}
 
-		bridge.mqtt.Publish(bridge.mqtt.BuildTopic(device, "is_active_source"), 0, false, value)
+		bridge.mqtt.Publish(bridge.mqtt.BuildTopic(device, "is_active_source"), 0, true, value)
 
 	}
 }

@@ -49,6 +49,10 @@ func InitialiseCec(devices *DeviceRegistry, path string) (*Cec, error) {
 		"adapters": adapters,
 	}).Debug("Adapters found")
 
+	if len(adapters) == 0 {
+		return nil, errors.New("no CEC adapters found")
+	}
+
 	if len(path) == 0 {
 		adapter = adapters[0]
 
