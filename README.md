@@ -4,6 +4,7 @@ Currently its supported features are:
 * Reading the power status (on/off) of devices
 * Powering on and off devices
 * Reading which device is active
+* Publishing the active source's CEC physical address (e.g. ``2.0.0.0``), so the active HDMI input can be tracked even for ports without a CEC device
 * Home Assistant integration for auto discovery
 
 # Requirements
@@ -78,6 +79,15 @@ home_assistant:
     enable: true
     discovery_prefix: homeassistant
 ```
+
+### Active source physical address
+In addition to the per-device ``is_active_source`` topic, cec2mqtt publishes the CEC physical address of the
+currently active source to the retained, bridge-level topic ``<base_topic>/active_source/physical_address`` (for the default
+base topic: ``cec2mqtt/active_source/physical_address``). The value is a string like ``2.0.0.0`` where the first octet is the
+HDMI input the TV is showing; it is set to ``0.0.0.0`` when the TV returns to its own tuner or goes to standby. Because it is
+derived from the TV's ``ROUTING_CHANGE`` / ``ACTIVE_SOURCE`` / ``SET_STREAM_PATH`` broadcasts, it tracks the active input even
+for ports that have no CEC device behind them. When the Home Assistant integration is enabled this is auto discovered as the
+``sensor.cec2mqtt_active_source`` sensor.
 
 ### Device configuration
 Devices which have been found in the CEC network can be configured as well. For this you **must** first stop cec2mqtt. When Cec2Mqtt is stopped you
