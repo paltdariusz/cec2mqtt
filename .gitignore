@@ -1,3 +1,5 @@
 cec2mqtt
 .idea
 *.md
+
+!README.md
