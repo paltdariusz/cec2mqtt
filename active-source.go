@@ -65,28 +65,29 @@ func InitAcitveSourceBridge(container *Container) {
 		}).Debug("Restarting active source monitor")
 
 		bridge.monitor.Reset()
-	}, gocec.OpcodeActiveSource, gocec.OpcodeSetStreamPath)
+		// RoutingChange included so that switching to the TV's own tuner (which
+		// the TV signals via <Routing Change> earlier and more reliably than its
+		// laggy <Active Source>) promptly re-runs the authoritative check below —
+		// without publishing the raw routing PA (which may be a phantom port).
+	}, gocec.OpcodeActiveSource, gocec.OpcodeSetStreamPath, gocec.OpcodeRoutingChange)
 
+	// Immediate fast path for deliberate source switches. Publish ONLY on
+	// <Active Source> (0x82): a device broadcasts it when it actually becomes
+	// the active source, carrying its own physical address. Unlike
+	// <Routing Change> (0x80) / <Set Stream Path> (0x86) — which sweep through
+	// and target physical addresses that may point at EMPTY HDMI ports — it is
+	// never emitted for a port with no device, so it carries no phantom address
+	// (e.g. the spurious 3.0.0.0 / 4.0.0.0 our empty HDMI3 / HDMI4 produced,
+	// which froze the retained topic on the wrong source). checkActiveSource()
+	// below is the authoritative settle/correction backstop.
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		params := message.Parameters()
-		var address gocec.PhysicalAddress
-		switch message.Opcode() {
-		case gocec.OpcodeRoutingChange:
-			if len(params) < 4 {
-				return
-			}
-			address = gocec.PhysicalAddress{params[2], params[3]}
-		case gocec.OpcodeActiveSource, gocec.OpcodeSetStreamPath:
-			if len(params) < 2 {
-				return
-			}
-			address = gocec.PhysicalAddress{params[0], params[1]}
-		default:
+		if len(params) < 2 {
 			return
 		}
 
-		bridge.publishPhysicalAddress(address)
-	}, gocec.OpcodeRoutingChange, gocec.OpcodeActiveSource, gocec.OpcodeSetStreamPath)
+		bridge.publishPhysicalAddress(gocec.PhysicalAddress{params[0], params[1]})
+	}, gocec.OpcodeActiveSource)
 
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		if message.Source() == gocec.DeviceTV {
@@ -201,6 +202,20 @@ func (bridge *ActiveSourceBridge) publishPhysicalAddress(address gocec.PhysicalA
 
 func (bridge *ActiveSourceBridge) checkActiveSource() {
 	address := bridge.cec.connection.GetActiveSource()
+
+	// Authoritative source of truth. libcec tracks the real active source on the
+	// bus; GetPhysicalAddress resolves the physical address for ANY logical
+	// address it knows — including devices our DeviceRegistry never matched
+	// (e.g. the PS5 on HDMI1) — so it covers every populated input. Publishing it
+	// here re-asserts the true source after a switch storm settles (the monitor
+	// re-runs on a short timer for ~1 min after each ActiveSource / SetStreamPath
+	// / RoutingChange), overwriting any transient value the fast path may have
+	// left on the retained topic. 0xFFFF is libcec's "unknown" — never publish it.
+	if address != gocec.DeviceUnknown {
+		if pa := bridge.cec.connection.GetPhysicalAddress(address); pa != (gocec.PhysicalAddress{0xFF, 0xFF}) {
+			bridge.publishPhysicalAddress(pa)
+		}
+	}
 
 	var newSource *Device = nil
 	newSourceId := ""

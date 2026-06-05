@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	BuildVersion = "0.0.2"
+	BuildVersion = "0.0.3"
 )
 
 type Initializer func(container *Container)
