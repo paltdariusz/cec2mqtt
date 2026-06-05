@@ -114,6 +114,48 @@ func (bridge *HomeAssistantBridge) RegisterBinarySensor(device *Device, property
 	bridge.mqtt.Publish(topic.String(), 0, true, encoded)
 }
 
+func (bridge *HomeAssistantBridge) RegisterSensor(objectId string, name string, stateTopic string) {
+	topic := strings.Builder{}
+	fmt.Fprintf(&topic, "%s/sensor/cec2mqtt_%s/%s/config", bridge.discoveryPrefix, bridge.config.Mqtt.BaseTopic, objectId)
+
+	config := map[string]interface{}{
+		"state_topic": stateTopic,
+		"name":        name,
+		"unique_id":   "cec2mqtt_" + bridge.config.Mqtt.BaseTopic + "_" + objectId,
+	}
+
+	if bridge.config.Mqtt.StateTopic != "" {
+		config["availability_topic"] = bridge.config.Mqtt.StateTopic
+		config["payload_available"] = bridge.config.Mqtt.BirthMessage
+		config["payload_not_available"] = bridge.config.Mqtt.WillMessage
+	}
+
+	config["device"] = map[string]interface{}{
+		"identifiers":  []string{"cec2mqtt_bridge_" + bridge.config.Mqtt.BaseTopic},
+		"name":         "cec2mqtt",
+		"sw_version":   "Cec2Mqtt " + BuildVersion,
+		"manufacturer": "cec2mqtt",
+	}
+
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"object_id": objectId,
+			"config":    config,
+			"error":     err,
+		}).Error("Failed to convert sensor configuration to JSON")
+
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"object_id": objectId,
+		"config":    string(encoded),
+	}).Info("Registering sensor in Home Assistant")
+
+	bridge.mqtt.Publish(topic.String(), 0, true, encoded)
+}
+
 func (bridge *HomeAssistantBridge) createConfig(device *Device, property string) map[string]interface{} {
 	config := map[string]interface{}{
 		"state_topic":           bridge.mqtt.BuildTopic(device, property),

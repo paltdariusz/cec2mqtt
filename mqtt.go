@@ -88,6 +88,12 @@ func (mqtt *Mqtt) BuildTopic(device *Device, suffix string) string {
 	return topic.String()
 }
 
+func (mqtt *Mqtt) BuildBridgeTopic(suffix string) string {
+	topic := strings.Builder{}
+	fmt.Fprintf(&topic, "%s/%s", mqtt.config.BaseTopic, suffix)
+	return topic.String()
+}
+
 func (mqtt *Mqtt) Publish(topic string, qos byte, retained bool, payload interface{}) {
 	mqtt.client.Publish(topic, qos, retained, payload)
 	log.WithFields(log.Fields{

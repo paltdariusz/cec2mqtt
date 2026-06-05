@@ -11,13 +11,14 @@ func init() {
 }
 
 type ActiveSourceBridge struct {
-	cec            *Cec
-	mqtt           *Mqtt
-	activeSource   *Device
-	devices        *DeviceRegistry
-	monitor        *Monitor
-	allowedSources map[gocec.LogicalAddress]bool
-	haBridge       *HomeAssistantBridge
+	cec                 *Cec
+	mqtt                *Mqtt
+	activeSource        *Device
+	devices             *DeviceRegistry
+	monitor             *Monitor
+	allowedSources      map[gocec.LogicalAddress]bool
+	haBridge            *HomeAssistantBridge
+	lastPhysicalAddress string
 }
 
 func InitAcitveSourceBridge(container *Container) {
@@ -51,6 +52,7 @@ func InitAcitveSourceBridge(container *Container) {
 		devices.RegisterDeviceAddedHandler(func(device *Device) {
 			haBridge.RegisterBinarySensor(device, "is_active_source")
 		})
+		haBridge.RegisterSensor("active_source", "active_source", mqtt.BuildBridgeTopic("active_source/physical_address"))
 		haBridge.RegisterBirthHandler(bridge.resendAll)
 	}
 
@@ -64,6 +66,33 @@ func InitAcitveSourceBridge(container *Container) {
 
 		bridge.monitor.Reset()
 	}, gocec.OpcodeActiveSource, gocec.OpcodeSetStreamPath)
+
+	cec.RegisterMessageHandler(func(message gocec.Message) {
+		params := message.Parameters()
+		var address gocec.PhysicalAddress
+		switch message.Opcode() {
+		case gocec.OpcodeRoutingChange:
+			if len(params) < 4 {
+				return
+			}
+			address = gocec.PhysicalAddress{params[2], params[3]}
+		case gocec.OpcodeActiveSource, gocec.OpcodeSetStreamPath:
+			if len(params) < 2 {
+				return
+			}
+			address = gocec.PhysicalAddress{params[0], params[1]}
+		default:
+			return
+		}
+
+		bridge.publishPhysicalAddress(address)
+	}, gocec.OpcodeRoutingChange, gocec.OpcodeActiveSource, gocec.OpcodeSetStreamPath)
+
+	cec.RegisterMessageHandler(func(message gocec.Message) {
+		if message.Source() == gocec.DeviceTV {
+			bridge.publishPhysicalAddress(gocec.PhysicalAddress{0x00, 0x00})
+		}
+	}, gocec.OpcodeStandby, gocec.OpcodeInactiveSource)
 
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		log.WithFields(log.Fields{
@@ -156,6 +185,20 @@ func (bridge *ActiveSourceBridge) updateActiveSource(newSource *Device) {
 	bridge.activeSource = newSource
 }
 
+func (bridge *ActiveSourceBridge) publishPhysicalAddress(address gocec.PhysicalAddress) {
+	value := address.String()
+	if value == bridge.lastPhysicalAddress {
+		return
+	}
+	bridge.lastPhysicalAddress = value
+
+	log.WithFields(log.Fields{
+		"active_source.physical_address": value,
+	}).Info("Publishing active source physical address")
+
+	bridge.mqtt.Publish(bridge.mqtt.BuildBridgeTopic("active_source/physical_address"), 0, true, value)
+}
+
 func (bridge *ActiveSourceBridge) checkActiveSource() {
 	address := bridge.cec.connection.GetActiveSource()
 
@@ -184,10 +227,16 @@ func (bridge *ActiveSourceBridge) resendAll() {
 
 		value := "off"
 		if bridge.activeSource != nil && device.Id == bridge.activeSource.Id {
-				value = "on"
+			value = "on"
 		}
 
 		bridge.mqtt.Publish(bridge.mqtt.BuildTopic(device, "is_active_source"), 0, true, value)
+	}
 
+	if bridge.haBridge != nil {
+		bridge.haBridge.RegisterSensor("active_source", "active_source", bridge.mqtt.BuildBridgeTopic("active_source/physical_address"))
+	}
+	if bridge.lastPhysicalAddress != "" {
+		bridge.mqtt.Publish(bridge.mqtt.BuildBridgeTopic("active_source/physical_address"), 0, true, bridge.lastPhysicalAddress)
 	}
 }
