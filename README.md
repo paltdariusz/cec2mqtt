@@ -15,13 +15,13 @@ Testing has been done both on a generic x64 computer using the Pulse-Eight HDMI-
 
 ## Installation
 The easiest way to run cec2mqtt is by using the Docker images published to this fork's GitHub Container Registry. The latest
-development build is available as ``ghcr.io/paltdariusz/cec2mqtt:edge``, and tagged releases such as ``ghcr.io/paltdariusz/cec2mqtt:0.0.4``
+development build is available as ``ghcr.io/paltdariusz/cec2mqtt:edge``, and tagged releases such as ``ghcr.io/paltdariusz/cec2mqtt:0.0.5``
 are published from version (``v*``) tags. For reproducible deployments it is recommended to pin a specific image by its digest
 (``ghcr.io/paltdariusz/cec2mqtt@sha256:...``). All images are multi-arch and work on all supported platforms (amd64, armv7, arm64).
 
 Running cec2mqtt can be done using:
 ```console
-docker run -v /path/to/data/directory:/data/cec2mqtt --device=/dev/cec0 ghcr.io/paltdariusz/cec2mqtt:0.0.4
+docker run -v /path/to/data/directory:/data/cec2mqtt --device=/dev/cec0 ghcr.io/paltdariusz/cec2mqtt:0.0.5
 ```
 ``/dev/cec0`` can be replaced with another CEC device if the system exposes more. Or use ``/dev/ttyACM0`` or equivalent if your kernel doesn't expose
 any CEC devices and you're using the Pulse-Eight HDMI-CEC adapter.
@@ -33,7 +33,7 @@ version: '3'
 services:
   cec2mqtt:
     container_name: cec2mqtt
-    image: ghcr.io/paltdariusz/cec2mqtt:0.0.4
+    image: ghcr.io/paltdariusz/cec2mqtt:0.0.5
     volumes:
       - ./data:/data/cec2mqtt
     devices:
