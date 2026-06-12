@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/RobertMe/gocec"
 	log "github.com/sirupsen/logrus"
+	"sync"
 	"time"
 )
 
@@ -19,7 +20,21 @@ type ActiveSourceBridge struct {
 	allowedSources      map[gocec.LogicalAddress]bool
 	haBridge            *HomeAssistantBridge
 	lastPhysicalAddress string
+
+	// stateMutex guards lastPhysicalAddress, claimCount, routeTimer and
+	// tvPoweredOn: with v0.0.4 these are touched from libcec's callback
+	// goroutine AND from time.AfterFunc goroutines (routed publish, power-on
+	// requests).
+	stateMutex  sync.Mutex
+	claimCount  uint64
+	routeTimer  *time.Timer
+	tvPoweredOn bool
 }
+
+// Routed publishes must outlast the slowest legitimate claimer (PS5 waking
+// from rest: 10.6 s measured 2026-06-12) but stay under the HA-side 15 s
+// "TV" debounce hold. SSP re-arms ~0.6 s after RC → worst case 12.6 s.
+const routedPublishDelay = 12 * time.Second
 
 func InitAcitveSourceBridge(container *Container) {
 	cec := container.Get("cec").(*Cec)
@@ -86,14 +101,64 @@ func InitAcitveSourceBridge(container *Container) {
 			return
 		}
 
-		bridge.publishPhysicalAddress(gocec.PhysicalAddress{params[0], params[1]})
+		bridge.stateMutex.Lock()
+		defer bridge.stateMutex.Unlock()
+		bridge.claimCount++
+		if bridge.routeTimer != nil {
+			bridge.routeTimer.Stop()
+			bridge.routeTimer = nil
+		}
+		bridge.publishPhysicalAddressLocked(gocec.PhysicalAddress{params[0], params[1]})
 	}, gocec.OpcodeActiveSource)
 
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		if message.Source() == gocec.DeviceTV {
-			bridge.publishPhysicalAddress(gocec.PhysicalAddress{0x00, 0x00})
+			bridge.stateMutex.Lock()
+			defer bridge.stateMutex.Unlock()
+			bridge.claimCount++
+			if bridge.routeTimer != nil {
+				bridge.routeTimer.Stop()
+				bridge.routeTimer = nil
+			}
+			bridge.publishPhysicalAddressLocked(gocec.PhysicalAddress{0x00, 0x00})
 		}
 	}, gocec.OpcodeStandby, gocec.OpcodeInactiveSource)
+
+	// Delayed-trust routing (v0.0.4): the TV's <Routing Change> /
+	// <Set Stream Path> target PA was correct in 8/8 live captures
+	// (2026-06-12: NRC + remote, ports 1-4, PC on/off) — including CEC-mute
+	// HDMI3 (PC) and empty HDMI4, which can never claim. Devices that CAN
+	// claim do so well within the delay (PS5 from rest 10.6 s, awake 0.7 s,
+	// our own adapter instantly) and cancel the timer via the handlers above;
+	// if nobody claims, the routed target IS the truth. This restores
+	// claimless-port visibility without reintroducing b258818's phantoms:
+	// a phantom can no longer freeze the topic, because every later RC/SSP
+	// re-arms and every claim/standby cancels.
+	cec.RegisterMessageHandler(func(message gocec.Message) {
+		params := message.Parameters()
+		var target gocec.PhysicalAddress
+		switch message.Opcode() {
+		case gocec.OpcodeRoutingChange:
+			if len(params) < 4 {
+				return
+			}
+			target = gocec.PhysicalAddress{params[2], params[3]}
+		case gocec.OpcodeSetStreamPath:
+			if len(params) < 2 {
+				return
+			}
+			target = gocec.PhysicalAddress{params[0], params[1]}
+		}
+
+		// The TV claims its tuner explicitly via <Active Source> (S3/S9);
+		// 0.0.0.0 must never be route-published — mid-switch "TV" is exactly
+		// the transient this design removes.
+		if target == (gocec.PhysicalAddress{0x00, 0x00}) {
+			return
+		}
+
+		bridge.armRoutedPublish(target)
+	}, gocec.OpcodeRoutingChange, gocec.OpcodeSetStreamPath)
 
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		log.WithFields(log.Fields{
@@ -108,6 +173,10 @@ func InitAcitveSourceBridge(container *Container) {
 		powerStatus := gocec.PowerStatus(message.Parameters()[0])
 		bridge.allowedSources[message.Source()] = powerStatus != gocec.PowerStatusStandBy
 
+		if message.Source() == gocec.DeviceTV {
+			bridge.handleTvPowerStatus(powerStatus)
+		}
+
 		if bridge.activeSource == nil || message.Source() != bridge.activeSource.LogicalAddress {
 			return
 		}
@@ -120,6 +189,9 @@ func InitAcitveSourceBridge(container *Container) {
 	cec.RegisterMessageHandler(func(message gocec.Message) {
 		if message.Source() == gocec.DeviceTV {
 			log.Debug("Setting active source to nil because TV is in standby")
+			bridge.stateMutex.Lock()
+			bridge.tvPoweredOn = false
+			bridge.stateMutex.Unlock()
 			bridge.updateActiveSource(nil)
 		}
 	}, gocec.OpcodeStandby)
@@ -187,6 +259,13 @@ func (bridge *ActiveSourceBridge) updateActiveSource(newSource *Device) {
 }
 
 func (bridge *ActiveSourceBridge) publishPhysicalAddress(address gocec.PhysicalAddress) {
+	bridge.stateMutex.Lock()
+	defer bridge.stateMutex.Unlock()
+	bridge.publishPhysicalAddressLocked(address)
+}
+
+// Callers must hold stateMutex.
+func (bridge *ActiveSourceBridge) publishPhysicalAddressLocked(address gocec.PhysicalAddress) {
 	value := address.String()
 	if value == bridge.lastPhysicalAddress {
 		return
@@ -198,6 +277,78 @@ func (bridge *ActiveSourceBridge) publishPhysicalAddress(address gocec.PhysicalA
 	}).Info("Publishing active source physical address")
 
 	bridge.mqtt.Publish(bridge.mqtt.BuildBridgeTopic("active_source/physical_address"), 0, true, value)
+}
+
+func (bridge *ActiveSourceBridge) armRoutedPublish(target gocec.PhysicalAddress) {
+	bridge.stateMutex.Lock()
+	defer bridge.stateMutex.Unlock()
+
+	if bridge.routeTimer != nil {
+		bridge.routeTimer.Stop()
+	}
+
+	log.WithFields(log.Fields{
+		"route.target": target.String(),
+	}).Debug("Arming delayed routed-source publish")
+
+	bridge.routeTimer = time.AfterFunc(routedPublishDelay, func() {
+		bridge.stateMutex.Lock()
+		defer bridge.stateMutex.Unlock()
+
+		bridge.routeTimer = nil
+
+		log.WithFields(log.Fields{
+			"route.target": target.String(),
+		}).Info("No active-source claim after routing change; publishing routed target")
+
+		bridge.publishPhysicalAddressLocked(target)
+	})
+}
+
+// R1 fix (v0.0.4): the TV announces NOTHING when it powers on to its tuner
+// (S1 2026-06-12: 3 power cycles, zero source frames). It DOES answer a
+// broadcast <Request Active Source> — within 180 ms when settled, by ~13 s
+// during boot (Step 0b / S1) — but only if the request comes from our
+// REGISTERED logical address (requests from unregistered LAs are ignored;
+// Step 0b probed both). Three staggered requests cover the boot window; each
+// is skipped once any claim (or standby) has been seen since scheduling.
+func (bridge *ActiveSourceBridge) handleTvPowerStatus(status gocec.PowerStatus) {
+	on := status == gocec.PowerStatusOn || status == gocec.PowerStatusTransitionToOn
+
+	bridge.stateMutex.Lock()
+	wasOn := bridge.tvPoweredOn
+	bridge.tvPoweredOn = on
+	claimsBefore := bridge.claimCount
+	bridge.stateMutex.Unlock()
+
+	if !on || wasOn {
+		return
+	}
+
+	adapterAddress, err := bridge.cec.connection.GetAdapterAddress()
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+		}).Warn("Cannot request active source: no adapter address")
+		return
+	}
+
+	request := gocec.NewMessage(adapterAddress, gocec.DeviceBroadcast, gocec.OpcodeRequestActiveSource, []byte{})
+
+	for _, delay := range []time.Duration{8 * time.Second, 16 * time.Second, 24 * time.Second} {
+		time.AfterFunc(delay, func() {
+			bridge.stateMutex.Lock()
+			claimed := bridge.claimCount != claimsBefore
+			bridge.stateMutex.Unlock()
+
+			if claimed {
+				return
+			}
+
+			log.Info("Requesting active source after TV power-on")
+			bridge.cec.Transmit(request)
+		})
+	}
 }
 
 func (bridge *ActiveSourceBridge) checkActiveSource() {
@@ -212,7 +363,14 @@ func (bridge *ActiveSourceBridge) checkActiveSource() {
 	// / RoutingChange), overwriting any transient value the fast path may have
 	// left on the retained topic. 0xFFFF is libcec's "unknown" — never publish it.
 	if address != gocec.DeviceUnknown {
-		if pa := bridge.cec.connection.GetPhysicalAddress(address); pa != (gocec.PhysicalAddress{0xFF, 0xFF}) {
+		pa := bridge.cec.connection.GetPhysicalAddress(address)
+		// 0xFFFF is libcec's "unknown" — never publish it. 0.0.0.0 (TV/tuner)
+		// is likewise excluded here (v0.0.4): libcec's "TV is active" view is
+		// stale mid-switch (R2's transient) and would overwrite a routed
+		// publish (R3 fix). Tuner truth comes ONLY from explicit TV frames:
+		// <Active Source 0.0.0.0>, <Standby>, <Inactive Source> — and the TV
+		// reliably sends those (S3/S9/S10).
+		if pa != (gocec.PhysicalAddress{0xFF, 0xFF}) && pa != (gocec.PhysicalAddress{0x00, 0x00}) {
 			bridge.publishPhysicalAddress(pa)
 		}
 	}
@@ -251,7 +409,12 @@ func (bridge *ActiveSourceBridge) resendAll() {
 	if bridge.haBridge != nil {
 		bridge.haBridge.RegisterSensor("active_source", "active_source", bridge.mqtt.BuildBridgeTopic("active_source/physical_address"))
 	}
-	if bridge.lastPhysicalAddress != "" {
-		bridge.mqtt.Publish(bridge.mqtt.BuildBridgeTopic("active_source/physical_address"), 0, true, bridge.lastPhysicalAddress)
+
+	bridge.stateMutex.Lock()
+	last := bridge.lastPhysicalAddress
+	bridge.stateMutex.Unlock()
+
+	if last != "" {
+		bridge.mqtt.Publish(bridge.mqtt.BuildBridgeTopic("active_source/physical_address"), 0, true, last)
 	}
 }

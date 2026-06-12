@@ -87,7 +87,7 @@ func (registry *DeviceRegistry) FindByLogicalAddress(address gocec.LogicalAddres
 	defer registry.devicesMutex.Unlock()
 	device, ok := registry.devices[address]
 	if !ok {
-		logContext.Info("Could not find device by logical address")
+		logContext.Debug("Could not find device by logical address")
 		return nil
 	}
 
