@@ -88,11 +88,15 @@ currently active source to the retained, bridge-level topic ``<base_topic>/activ
 base topic: ``cec2mqtt/active_source/physical_address``). The value is a string like ``2.0.0.0`` where the first octet is the
 HDMI input the TV is showing; it is set to ``0.0.0.0`` when the TV returns to its own tuner or goes to standby.
 
-The topic is fed by three mechanisms (as of 0.0.4):
-* An ``ACTIVE_SOURCE`` claim from any device is published immediately — a device announcing itself is always the truth.
-* A ``ROUTING_CHANGE`` / ``SET_STREAM_PATH`` target is published only after a 12 second delay, and only if no device claims the
-  bus in the meantime ("delayed trust"). This tracks inputs that have no CEC device behind them (a PC, an empty port) without
-  trusting phantom routing sweeps, and it never publishes ``0.0.0.0`` — the TV announces its own tuner explicitly.
+The topic is fed by three mechanisms (as of 0.0.5):
+* An ``ACTIVE_SOURCE`` claim is published immediately — **unless** a routed target to a *different* address is pending, in which
+  case the claim is a stale answer to an outdated routing request and is ignored (e.g. a resting PS5 woken by routing merely
+  passing through its port claims it 5–11 s later, after the TV has already moved on). A claim matching the pending target
+  confirms it and publishes early.
+* A ``ROUTING_CHANGE`` / ``SET_STREAM_PATH`` target is published only after a 12 second delay, and only if no device claims that
+  address in the meantime ("delayed trust"). This tracks inputs that have no CEC device behind them (a PC, an empty port) without
+  trusting phantom routing sweeps, and it never publishes ``0.0.0.0`` — the TV announces its own tuner explicitly (a routing
+  target of ``0.0.0.0`` still cancels any pending routed publish, so a quick port→tuner hop lands on the tuner announce).
 * When the TV reports powering on, cec2mqtt broadcasts ``<Request Active Source>`` (at 8/16/24 s, stopping once anything claims),
   because some TVs (e.g. Panasonic Viera) announce nothing when they boot to their own tuner.
 
