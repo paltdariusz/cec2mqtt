@@ -15,13 +15,13 @@ Testing has been done both on a generic x64 computer using the Pulse-Eight HDMI-
 
 ## Installation
 The easiest way to run cec2mqtt is by using the Docker images published to this fork's GitHub Container Registry. The latest
-development build is available as ``ghcr.io/paltdariusz/cec2mqtt:edge``, and tagged releases such as ``ghcr.io/paltdariusz/cec2mqtt:0.0.2``
+development build is available as ``ghcr.io/paltdariusz/cec2mqtt:edge``, and tagged releases such as ``ghcr.io/paltdariusz/cec2mqtt:0.0.4``
 are published from version (``v*``) tags. For reproducible deployments it is recommended to pin a specific image by its digest
 (``ghcr.io/paltdariusz/cec2mqtt@sha256:...``). All images are multi-arch and work on all supported platforms (amd64, armv7, arm64).
 
 Running cec2mqtt can be done using:
 ```console
-docker run -v /path/to/data/directory:/data/cec2mqtt --device=/dev/cec0 ghcr.io/paltdariusz/cec2mqtt:0.0.2
+docker run -v /path/to/data/directory:/data/cec2mqtt --device=/dev/cec0 ghcr.io/paltdariusz/cec2mqtt:0.0.4
 ```
 ``/dev/cec0`` can be replaced with another CEC device if the system exposes more. Or use ``/dev/ttyACM0`` or equivalent if your kernel doesn't expose
 any CEC devices and you're using the Pulse-Eight HDMI-CEC adapter.
@@ -33,7 +33,7 @@ version: '3'
 services:
   cec2mqtt:
     container_name: cec2mqtt
-    image: ghcr.io/paltdariusz/cec2mqtt:0.0.2
+    image: ghcr.io/paltdariusz/cec2mqtt:0.0.4
     volumes:
       - ./data:/data/cec2mqtt
     devices:
@@ -86,10 +86,17 @@ home_assistant:
 In addition to the per-device ``is_active_source`` topic, cec2mqtt publishes the CEC physical address of the
 currently active source to the retained, bridge-level topic ``<base_topic>/active_source/physical_address`` (for the default
 base topic: ``cec2mqtt/active_source/physical_address``). The value is a string like ``2.0.0.0`` where the first octet is the
-HDMI input the TV is showing; it is set to ``0.0.0.0`` when the TV returns to its own tuner or goes to standby. Because it is
-derived from the TV's ``ROUTING_CHANGE`` / ``ACTIVE_SOURCE`` / ``SET_STREAM_PATH`` broadcasts, it tracks the active input even
-for ports that have no CEC device behind them. When the Home Assistant integration is enabled this is auto discovered as the
-``sensor.cec2mqtt_active_source`` sensor.
+HDMI input the TV is showing; it is set to ``0.0.0.0`` when the TV returns to its own tuner or goes to standby.
+
+The topic is fed by three mechanisms (as of 0.0.4):
+* An ``ACTIVE_SOURCE`` claim from any device is published immediately — a device announcing itself is always the truth.
+* A ``ROUTING_CHANGE`` / ``SET_STREAM_PATH`` target is published only after a 12 second delay, and only if no device claims the
+  bus in the meantime ("delayed trust"). This tracks inputs that have no CEC device behind them (a PC, an empty port) without
+  trusting phantom routing sweeps, and it never publishes ``0.0.0.0`` — the TV announces its own tuner explicitly.
+* When the TV reports powering on, cec2mqtt broadcasts ``<Request Active Source>`` (at 8/16/24 s, stopping once anything claims),
+  because some TVs (e.g. Panasonic Viera) announce nothing when they boot to their own tuner.
+
+When the Home Assistant integration is enabled this is auto discovered as the ``sensor.cec2mqtt_active_source`` sensor.
 
 ### Device configuration
 Devices which have been found in the CEC network can be configured as well. For this you **must** first stop cec2mqtt. When Cec2Mqtt is stopped you
